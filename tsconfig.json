@@ -17,7 +17,7 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "types": ["vite/client", "@figma/plugin-typings"] 
+    "types": ["vite/client"] 
   },
   "include": ["src", "code.ts"]
 }
