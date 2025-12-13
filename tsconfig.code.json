@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES6",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "lib": ["ES6", "WebWorker"],
+    "outFile": "./code.js",
+    "types": ["@figma/plugin-typings"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": false
+  },
+  "include": ["code.ts"]
+}
