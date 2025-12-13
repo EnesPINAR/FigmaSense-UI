@@ -1,0 +1,27 @@
+description: Ultralytics best model trained on C:\Users\enesp\Desktop\FigmaSense\ui-element-detectio-1\data.yaml
+author: Ultralytics
+date: '2025-12-13T11:07:06.196638'
+version: 8.3.237
+license: AGPL-3.0 License (https://ultralytics.com/license)
+docs: https://docs.ultralytics.com
+stride: 32
+task: detect
+batch: 1
+imgsz:
+- 1280
+- 1280
+names:
+  0: button
+  1: checkbox
+  2: dropdown
+  3: icon
+  4: input
+  5: label
+  6: radio
+  7: switch
+args:
+  batch: 1
+  half: false
+  int8: false
+  nms: false
+channels: 3
