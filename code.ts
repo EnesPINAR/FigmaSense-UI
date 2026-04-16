@@ -1,69 +1,78 @@
 /// <reference types="@figma/plugin-typings" />
+// controller.ts veya code.ts
+console.clear();
 
-figma.showUI(__html__, { width: 300, height: 450 });
+figma.showUI(__html__, { width: 340, height: 600, themeColors: true });
+
+// Yardımcı Fonksiyon: Tüm alt katmanları düzleştirerek (flatten) getir
+// Bu sayede Input bir grubun en dibinde olsa bile buluruz.
+function findAllNodes(node: SceneNode, nodes: SceneNode[] = []) {
+  if ("children" in node) {
+    for (const child of node.children) {
+      nodes.push(child);
+      findAllNodes(child, nodes);
+    }
+  }
+  return nodes;
+}
 
 figma.ui.onmessage = async (msg) => {
-  
-  // 1. ANALİZ İSTEĞİ GELDİ (Kullanıcı butona bastı)
-  if (msg.type === 'analyze-request') {
-    if (figma.currentPage.selection.length === 0) {
-      figma.notify("❌ Lütfen analiz edilecek bir Frame seçin.");
+  // 1. Görüntü İsteği (AI İçin)
+  if (msg.type === "analyze-request") {
+    const selection = figma.currentPage.selection;
+    if (selection.length === 0) {
+      figma.ui.postMessage({
+        type: "error",
+        message: "Lütfen bir Frame seçin.",
+      });
       return;
     }
-    const node = figma.currentPage.selection[0];
-    
-    // Sadece Frame vb. kabul et
-    if (node.type !== 'FRAME' && node.type !== 'COMPONENT' && node.type !== 'INSTANCE') {
-      figma.notify("⚠️ Lütfen bir Frame seçin.");
-      return;
+    const node = selection[0];
+    try {
+      const bytes = await node.exportAsync({
+        format: "PNG",
+        constraint: { type: "SCALE", value: 2 },
+      });
+      figma.ui.postMessage({ type: "image-data", bytes });
+    } catch (err) {
+      figma.ui.postMessage({ type: "error", message: "Görüntü alınamadı." });
     }
-
-    figma.notify("📸 Görüntü işleniyor...");
-    
-    // Resmi al ve UI'a gönder
-    const bytes = await node.exportAsync({
-      format: 'PNG',
-      constraint: { type: 'SCALE', value: 2 } // Kalite için 2x
-    });
-    
-    figma.ui.postMessage({ type: 'image-data', bytes: bytes });
   }
 
-  // 2. SONUÇLAR GELDİ (Yapay zeka buldu, çizim yapalım)
-  else if (msg.type === 'draw-rectangles') {
-    const nodes: SceneNode[] = [];
-    const selectedNode = figma.currentPage.selection[0] as FrameNode;
-    
-    // Seçili frame'in boyutları
-    const { width, height } = selectedNode;
-
-    // Her bir tespit için kutu çiz
-    for (const box of msg.boxes) {
-      const rect = figma.createRectangle();
-      
-      // Koordinatları hesapla (Oransal geldiği için genişlik/yükseklik ile çarpıyoruz)
-      const x = box.x1 * width;
-      const y = box.y1 * height;
-      const w = (box.x2 - box.x1) * width;
-      const h = (box.y2 - box.y1) * height;
-
-      rect.x = x;
-      rect.y = y;
-      rect.resize(w, h);
-      
-      // Stil Ayarları (Şeffaf Kırmızı Kutu)
-      rect.fills = [{ type: 'SOLID', color: { r: 1, g: 0, b: 0 }, opacity: 0.1 }]; // İçi %10 kırmızı
-      rect.strokes = [{ type: 'SOLID', color: { r: 1, g: 0, b: 0 } }]; // Çerçeve tam kırmızı
-      rect.strokeWeight = 2;
-      rect.name = `${box.class} (${Math.round(box.score * 100)}%)`; // Katman ismi
-
-      // Kutuyu seçili frame'in içine at
-      selectedNode.appendChild(rect);
-      nodes.push(rect);
+  // 2. KESİN VERİ İSTEĞİ (Native Data)
+  if (msg.type === "fetch-native-data") {
+    const selection = figma.currentPage.selection;
+    if (selection.length === 0) {
+      figma.ui.postMessage({ type: "native-data", nodes: [] });
+      return;
     }
 
-    // Çizilen kutuları seçili hale getir
-    figma.currentPage.selection = nodes;
-    figma.notify(`✅ Analiz Bitti! ${msg.boxes.length} nesne bulundu.`);
+    const mainFrame = selection[0];
+
+    // Sadece doğrudan çocukları değil, tüm ağacı tara (Deep Search)
+    // Böylece grupların içindeki inputları da yakalarız.
+    const allDescendants = findAllNodes(mainFrame as SceneNode);
+
+    const nativeNodes = allDescendants
+      .filter((node) => node.visible)
+      .map((node) => {
+        // --- KRİTİK DÜZELTME: MUTLAK KOORDİNAT HESABI ---
+        // node.x yerine absoluteTransform kullanıyoruz.
+        // absoluteTransform[0][2] -> X eksenindeki mutlak konum (Translation X)
+        // absoluteTransform[1][2] -> Y eksenindeki mutlak konum (Translation Y)
+        const absX = node.absoluteTransform[0][2];
+        const absY = node.absoluteTransform[1][2];
+
+        return {
+          id: node.id,
+          name: node.name,
+          x: absX, // Artık Relative değil, Absolute X
+          y: absY, // Artık Relative değil, Absolute Y
+          width: node.width,
+          height: node.height,
+        };
+      });
+
+    figma.ui.postMessage({ type: "native-data", nodes: nativeNodes });
   }
 };
