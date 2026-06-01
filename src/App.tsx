@@ -1,6 +1,13 @@
 import React, { useEffect, useState, useRef } from "react";
 import * as tf from "@tensorflow/tfjs";
 import "@tensorflow/tfjs-backend-webgl";
+import {
+  getContrastRatio,
+  checkWCAGCompliance,
+  getContrastStatus,
+  getContrastPercentage,
+  type RGB,
+} from "./utils/contrastUtils";
 
 // ✅ MODEL URL
 const MODEL_URL =
@@ -16,6 +23,8 @@ interface NativeNodeData {
   y: number;
   width: number;
   height: number;
+  textColor?: RGB;
+  backgroundColor?: RGB;
 }
 
 interface AIRawResult {
@@ -26,6 +35,8 @@ interface AIRawResult {
   pixelW: number;
   pixelH: number;
   previewUrl: string; 
+  extractedTextColor?: RGB;
+  extractedBgColor?: RGB;
 }
 
 interface AnalysisResult {
@@ -36,6 +47,19 @@ interface AnalysisResult {
   message: string;
   preciseX: number;
   previewUrl: string; 
+}
+
+interface ContrastAnalysisResult extends AnalysisResult {
+  textColor?: RGB;
+  backgroundColor?: RGB;
+  contrastRatio?: number;
+  wcagCompliance?: {
+    isAANormal: boolean;
+    isAALarge: boolean;
+    isAAA: boolean;
+    isAAALarge: boolean;
+  };
+  contrastStatus?: "pass" | "warning" | "fail";
 }
 
 const getIcon = (className: string) => {
@@ -213,11 +237,11 @@ function App() {
         localY: n.y - frameMinY
     }));
 
-    const matchedResults: AnalysisResult[] = [];
+    const matchedResults: ContrastAnalysisResult[] = [];
 
     // 🎯 IoU (Kesişim/Birleşim) Algoritması ile Güvenilir Eşleştirme
     aiResults.forEach((aiItem) => {
-        let bestMatch = null;
+        let bestMatch: (typeof normalizedNativeNodes[0]) | null = null;
         let bestIoU = 0;
 
         normalizedNativeNodes.forEach(native => {
@@ -247,14 +271,41 @@ function App() {
 
         // Sadece %10'dan fazla uyuşma varsa gerçek bir obje olarak kabul et
         if (bestMatch && bestIoU > 0.1) {
+            // ✨ YENİ: Kontrast Analizi
+            let contrastRatio: number | undefined;
+            let wcagCompliance: ContrastAnalysisResult["wcagCompliance"] | undefined;
+            let contrastStatus: "pass" | "warning" | "fail" | undefined;
+
+            // Debug: Renkleri kontrol et
+            console.log(`[Contrast] ${bestMatch.name}:`, {
+              textColor: bestMatch.textColor,
+              backgroundColor: bestMatch.backgroundColor,
+            });
+
+            if (bestMatch.textColor && bestMatch.backgroundColor) {
+                contrastRatio = getContrastRatio(bestMatch.textColor, bestMatch.backgroundColor);
+                wcagCompliance = checkWCAGCompliance(contrastRatio);
+                contrastStatus = getContrastStatus(contrastRatio);
+                
+                console.log(`[Contrast] ${bestMatch.name}: ${contrastRatio.toFixed(2)}:1 - ${contrastStatus}`);
+                wcagCompliance = checkWCAGCompliance(contrastRatio);
+                contrastStatus = getContrastStatus(contrastRatio);
+            }
+
             matchedResults.push({
                 id: bestMatch.id,
                 class: aiItem.class,
                 score: aiItem.score,
                 status: "✅",
                 message: "Hizalı",
-                preciseX: bestMatch.localX, // Eşleşen gerçek katmanın kesin X değeri
-                previewUrl: aiItem.previewUrl 
+                preciseX: bestMatch.localX,
+                previewUrl: aiItem.previewUrl,
+                // ✨ YENİ: Kontrast alanları
+                textColor: bestMatch.textColor,
+                backgroundColor: bestMatch.backgroundColor,
+                contrastRatio,
+                wcagCompliance,
+                contrastStatus,
             });
         }
     });
@@ -342,16 +393,96 @@ function App() {
                          </span>
                     </div>
 
-                    {res.status === "❌" ? (
-                       <span style={{fontSize:"11px", color:"#D32F2F", background:"#FFEBEE", padding:"4px 8px", borderRadius:"4px", fontWeight:"600"}}>
-                         {res.message}
-                       </span>
-                    ) : (
-                       <span style={{fontSize:"11px", color:"#388E3C", fontWeight:"bold"}}>
-                          {res.message === "Tam Hizalı" ? "✓ Hizalı" : ""}
-                       </span>
-                    )}
+                    <div style={{display: "flex", gap: "6px"}}>
+                      {/* ✨ YENİ: Kontrast Badge */}
+                      {res.contrastStatus && (
+                        <span style={{
+                          fontSize:"10px", 
+                          padding:"3px 6px", 
+                          borderRadius:"3px",
+                          fontWeight:"600",
+                          background: res.contrastStatus === "pass" ? "#E8F5E9" : res.contrastStatus === "warning" ? "#FFF3E0" : "#FFEBEE",
+                          color: res.contrastStatus === "pass" ? "#2E7D32" : res.contrastStatus === "warning" ? "#E65100" : "#C62828",
+                          title: res.contrastRatio ? `Kontrast: ${res.contrastRatio.toFixed(2)}:1` : ""
+                        }}>
+                          {res.contrastStatus === "pass" ? "✓ AAA" : res.contrastStatus === "warning" ? "⚠ AA" : "✗ Zayıf"}
+                        </span>
+                      )}
+
+                      {res.status === "❌" ? (
+                         <span style={{fontSize:"11px", color:"#D32F2F", background:"#FFEBEE", padding:"4px 8px", borderRadius:"4px", fontWeight:"600"}}>
+                           {res.message}
+                         </span>
+                      ) : (
+                         <span style={{fontSize:"11px", color:"#388E3C", fontWeight:"bold"}}>
+                            {res.message === "Tam Hizalı" ? "✓ Hizalı" : ""}
+                         </span>
+                      )}
+                    </div>
                 </div>
+
+                {/* ✨ YENİ: Kontrast Detayları */}
+                {res.contrastRatio ? (
+                  <div style={{
+                    fontSize: "11px",
+                    padding: "8px",
+                    background: "#F5F5F5",
+                    borderRadius: "4px",
+                    marginBottom: "10px",
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: "8px"
+                  }}>
+                    <div>
+                      <span style={{color: "#666", fontWeight: "500"}}>Kontrast:</span>
+                      <div style={{color: "#333", fontWeight: "600", fontSize: "12px"}}>
+                        {res.contrastRatio.toFixed(2)}:1
+                      </div>
+                    </div>
+                    <div>
+                      <span style={{color: "#666", fontWeight: "500"}}>WCAG:</span>
+                      <div style={{color: "#333", fontWeight: "600", fontSize: "12px"}}>
+                        {res.wcagCompliance?.isAAA ? "AAA ✓" : res.wcagCompliance?.isAANormal ? "AA ✓" : "Fail ✗"}
+                      </div>
+                    </div>
+                    {res.textColor && res.backgroundColor && (
+                      <>
+                        <div style={{display: "flex", alignItems: "center", gap: "4px"}}>
+                          <span style={{color: "#666", fontWeight: "500"}}>Text:</span>
+                          <div style={{
+                            width: "16px",
+                            height: "16px",
+                            background: `rgb(${res.textColor[0]}, ${res.textColor[1]}, ${res.textColor[2]})`,
+                            borderRadius: "2px",
+                            border: "1px solid #ddd"
+                          }} title={`RGB(${res.textColor.join(", ")})`} />
+                        </div>
+                        <div style={{display: "flex", alignItems: "center", gap: "4px"}}>
+                          <span style={{color: "#666", fontWeight: "500"}}>BG:</span>
+                          <div style={{
+                            width: "16px",
+                            height: "16px",
+                            background: `rgb(${res.backgroundColor[0]}, ${res.backgroundColor[1]}, ${res.backgroundColor[2]})`,
+                            borderRadius: "2px",
+                            border: "1px solid #ddd"
+                          }} title={`RGB(${res.backgroundColor.join(", ")})`} />
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{
+                    fontSize: "10px",
+                    padding: "6px 8px",
+                    background: "#FFF3CD",
+                    borderRadius: "4px",
+                    marginBottom: "10px",
+                    color: "#856404",
+                    fontWeight: "500"
+                  }}>
+                    ℹ️ Renk bilgisi çıkarılamadı (Element'in fill/stroke renklendirilmesi gerekiyor)
+                  </div>
+                )}
 
                 <div style={{
                     width: "100%", 

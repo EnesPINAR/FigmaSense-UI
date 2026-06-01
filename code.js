@@ -33,6 +33,101 @@
     }
     return nodes;
   }
+  function extractColorFromNode(node) {
+    const colors = {};
+    try {
+      if (node.type === "TEXT") {
+        const textNode = node;
+        if (textNode.fills && Array.isArray(textNode.fills)) {
+          for (const fill of textNode.fills) {
+            if (fill.type === "SOLID" && fill.color && fill.visible !== false) {
+              const r = Math.round(fill.color.r * 255);
+              const g = Math.round(fill.color.g * 255);
+              const b = Math.round(fill.color.b * 255);
+              colors.textColor = [r, g, b];
+              console.log(`[Color] TEXT: "${node.name}" text color = RGB(${r},${g},${b})`);
+              break;
+            }
+          }
+        }
+      }
+      if (!colors.textColor && "children" in node) {
+        const children = node.children;
+        if (Array.isArray(children)) {
+          for (const child of children) {
+            if (child.type === "TEXT" && child.visible) {
+              const textNode = child;
+              if (textNode.fills && Array.isArray(textNode.fills)) {
+                for (const fill of textNode.fills) {
+                  if (fill.type === "SOLID" && fill.color && fill.visible !== false) {
+                    const r = Math.round(fill.color.r * 255);
+                    const g = Math.round(fill.color.g * 255);
+                    const b = Math.round(fill.color.b * 255);
+                    colors.textColor = [r, g, b];
+                    console.log(`[Color] CHILD TEXT: "${child.name}" text color = RGB(${r},${g},${b})`);
+                    break;
+                  }
+                }
+                if (colors.textColor) break;
+              }
+            }
+          }
+        }
+      }
+      if ("fills" in node && node.type !== "TEXT") {
+        const fills = node.fills;
+        if (Array.isArray(fills) && fills.length > 0) {
+          for (const fill of fills) {
+            if (fill.type === "SOLID" && fill.color && fill.visible !== false) {
+              const r = Math.round(fill.color.r * 255);
+              const g = Math.round(fill.color.g * 255);
+              const b = Math.round(fill.color.b * 255);
+              colors.bgColor = [r, g, b];
+              console.log(`[Color] FILL: "${node.name}" bg color = RGB(${r},${g},${b})`);
+              break;
+            }
+          }
+        }
+      }
+      if (!colors.textColor && "strokes" in node) {
+        const strokes = node.strokes;
+        if (Array.isArray(strokes) && strokes.length > 0) {
+          for (const stroke of strokes) {
+            if (stroke.type === "SOLID" && stroke.color && stroke.visible !== false && stroke.strokeWeight > 0) {
+              const r = Math.round(stroke.color.r * 255);
+              const g = Math.round(stroke.color.g * 255);
+              const b = Math.round(stroke.color.b * 255);
+              colors.textColor = [r, g, b];
+              console.log(`[Color] STROKE: "${node.name}" stroke color = RGB(${r},${g},${b})`);
+              break;
+            }
+          }
+        }
+      }
+      if (!colors.bgColor && "parent" in node && node.parent && node.parent.type !== "PAGE") {
+        const parent = node.parent;
+        if ("fills" in parent) {
+          const fills = parent.fills;
+          if (Array.isArray(fills)) {
+            for (const fill of fills) {
+              if (fill.type === "SOLID" && fill.color && fill.visible !== false) {
+                const r = Math.round(fill.color.r * 255);
+                const g = Math.round(fill.color.g * 255);
+                const b = Math.round(fill.color.b * 255);
+                colors.bgColor = [r, g, b];
+                console.log(`[Color] PARENT: "${parent.name}" bg color = RGB(${r},${g},${b})`);
+                break;
+              }
+            }
+          }
+        }
+      }
+      console.log(`[Color] FINAL: "${node.name}" \u2192`, colors);
+    } catch (error) {
+      console.error(`[Color] ERROR on "${node.name}":`, error);
+    }
+    return colors;
+  }
   figma.ui.onmessage = (msg) => __async(null, null, function* () {
     if (msg.type === "analyze-request") {
       const selection = figma.currentPage.selection;
@@ -65,6 +160,7 @@
       const nativeNodes = allDescendants.filter((node) => node.visible).map((node) => {
         const absX = node.absoluteTransform[0][2];
         const absY = node.absoluteTransform[1][2];
+        const { textColor, bgColor } = extractColorFromNode(node);
         return {
           id: node.id,
           name: node.name,
@@ -73,7 +169,11 @@
           y: absY,
           // Artık Relative değil, Absolute Y
           width: node.width,
-          height: node.height
+          height: node.height,
+          textColor,
+          // ✨ YENİ
+          backgroundColor: bgColor
+          // ✨ YENİ
         };
       });
       figma.ui.postMessage({ type: "native-data", nodes: nativeNodes });
