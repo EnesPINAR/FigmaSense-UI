@@ -36,16 +36,15 @@
   function extractColorFromNode(node) {
     const colors = {};
     try {
-      if (node.type === "TEXT") {
-        const textNode = node;
-        if (textNode.fills && Array.isArray(textNode.fills)) {
-          for (const fill of textNode.fills) {
+      if (node.type === "TEXT" || node.type === "VECTOR" || node.type === "BOOLEAN_OPERATION") {
+        const fills = node.fills;
+        if (Array.isArray(fills)) {
+          for (const fill of fills) {
             if (fill.type === "SOLID" && fill.color && fill.visible !== false) {
               const r = Math.round(fill.color.r * 255);
               const g = Math.round(fill.color.g * 255);
               const b = Math.round(fill.color.b * 255);
               colors.textColor = [r, g, b];
-              console.log(`[Color] TEXT: "${node.name}" text color = RGB(${r},${g},${b})`);
               break;
             }
           }
@@ -55,16 +54,15 @@
         const children = node.children;
         if (Array.isArray(children)) {
           for (const child of children) {
-            if (child.type === "TEXT" && child.visible) {
-              const textNode = child;
-              if (textNode.fills && Array.isArray(textNode.fills)) {
-                for (const fill of textNode.fills) {
+            if ((child.type === "TEXT" || child.type === "VECTOR" || child.type === "BOOLEAN_OPERATION") && child.visible) {
+              const fills = child.fills;
+              if (Array.isArray(fills)) {
+                for (const fill of fills) {
                   if (fill.type === "SOLID" && fill.color && fill.visible !== false) {
                     const r = Math.round(fill.color.r * 255);
                     const g = Math.round(fill.color.g * 255);
                     const b = Math.round(fill.color.b * 255);
                     colors.textColor = [r, g, b];
-                    console.log(`[Color] CHILD TEXT: "${child.name}" text color = RGB(${r},${g},${b})`);
                     break;
                   }
                 }
@@ -74,16 +72,15 @@
           }
         }
       }
-      if ("fills" in node && node.type !== "TEXT") {
+      if ("fills" in node && node.type !== "TEXT" && node.type !== "VECTOR" && node.type !== "BOOLEAN_OPERATION") {
         const fills = node.fills;
         if (Array.isArray(fills) && fills.length > 0) {
           for (const fill of fills) {
-            if (fill.type === "SOLID" && fill.color && fill.visible !== false) {
+            if (fill.type === "SOLID" && fill.color && fill.visible !== false && fill.opacity !== 0) {
               const r = Math.round(fill.color.r * 255);
               const g = Math.round(fill.color.g * 255);
               const b = Math.round(fill.color.b * 255);
               colors.bgColor = [r, g, b];
-              console.log(`[Color] FILL: "${node.name}" bg color = RGB(${r},${g},${b})`);
               break;
             }
           }
@@ -98,31 +95,31 @@
               const g = Math.round(stroke.color.g * 255);
               const b = Math.round(stroke.color.b * 255);
               colors.textColor = [r, g, b];
-              console.log(`[Color] STROKE: "${node.name}" stroke color = RGB(${r},${g},${b})`);
               break;
             }
           }
         }
       }
-      if (!colors.bgColor && "parent" in node && node.parent && node.parent.type !== "PAGE") {
-        const parent = node.parent;
-        if ("fills" in parent) {
-          const fills = parent.fills;
-          if (Array.isArray(fills)) {
-            for (const fill of fills) {
-              if (fill.type === "SOLID" && fill.color && fill.visible !== false) {
-                const r = Math.round(fill.color.r * 255);
-                const g = Math.round(fill.color.g * 255);
-                const b = Math.round(fill.color.b * 255);
-                colors.bgColor = [r, g, b];
-                console.log(`[Color] PARENT: "${parent.name}" bg color = RGB(${r},${g},${b})`);
-                break;
+      if (!colors.bgColor && "parent" in node) {
+        let currentParent = node.parent;
+        while (currentParent && currentParent.type !== "PAGE" && !colors.bgColor) {
+          if ("fills" in currentParent) {
+            const fills = currentParent.fills;
+            if (Array.isArray(fills)) {
+              for (const fill of fills) {
+                if (fill.type === "SOLID" && fill.color && fill.visible !== false && fill.opacity !== 0) {
+                  const r = Math.round(fill.color.r * 255);
+                  const g = Math.round(fill.color.g * 255);
+                  const b = Math.round(fill.color.b * 255);
+                  colors.bgColor = [r, g, b];
+                  break;
+                }
               }
             }
           }
+          currentParent = currentParent.parent;
         }
       }
-      console.log(`[Color] FINAL: "${node.name}" \u2192`, colors);
     } catch (error) {
       console.error(`[Color] ERROR on "${node.name}":`, error);
     }
@@ -164,6 +161,8 @@
         return {
           id: node.id,
           name: node.name,
+          type: node.type,
+          // Eklendi
           x: absX,
           // Artık Relative değil, Absolute X
           y: absY,

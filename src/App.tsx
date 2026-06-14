@@ -19,6 +19,7 @@ const CLASSES = ["button", "checkbox", "dropdown", "icon", "input", "label", "ra
 interface NativeNodeData {
   id: string;
   name: string;
+  type: string;
   x: number;
   y: number;
   width: number;
@@ -46,6 +47,9 @@ interface AnalysisResult {
   status: "✅" | "❌";
   message: string;
   preciseX: number;
+  preciseY?: number;
+  width?: number;
+  height?: number;
   previewUrl: string; 
 }
 
@@ -85,6 +89,7 @@ function App() {
   const [results, setResults] = useState<AnalysisResult[]>([]);
   
   const tempAIResultsStr = useRef<string>("[]"); 
+  const imageRef = useRef<HTMLImageElement | null>(null);
 
   useEffect(() => {
     const loadModel = async () => {
@@ -134,6 +139,7 @@ function App() {
       img.src = URL.createObjectURL(blob);
 
       img.onload = async () => {
+        imageRef.current = img;
         const { input, newW, newH } = tf.tidy(() => {
             const tensor = tf.browser.fromPixels(img);
             const [h, w] = tensor.shape;
@@ -159,14 +165,27 @@ function App() {
             const hTensor = transRes.slice([0, 0, 3], [-1, -1, 1]);
             const x1Tensor = tf.sub(transRes.slice([0, 0, 0], [-1, -1, 1]), tf.div(wTensor, 2));
             const y1Tensor = tf.sub(transRes.slice([0, 0, 1], [-1, -1, 1]), tf.div(hTensor, 2));
+            
+            const rawScores = transRes.slice([0, 0, 4], [-1, -1, 8]);
+            
+            // Dropdown'lar genellikle liste halinde peş peşe gelir ve küçük ok ikonları dışında input'lara çok benzerler.
+            // Bu yüzden Dropdown sınıfı çarpanını 2.0'a çıkararak modelin en ufak bir dropdown şüphesini değerlendirmesini sağlıyoruz.
+            // Sınıflar: ["button", "checkbox", "dropdown", "icon", "input", "label", "radio", "switch"]
+            const multipliers = tf.tensor1d([1.0, 1.2, 2.0, 1.0, 1.0, 1.0, 1.2, 1.0]);
+            const boostedScores = rawScores.mul(multipliers);
+
             return {
               boxes: tf.concat([y1Tensor, x1Tensor, tf.add(y1Tensor, hTensor), tf.add(x1Tensor, wTensor)], 2).squeeze(),
-              scores: transRes.slice([0, 0, 4], [-1, -1, 8]).max(2).squeeze(),
-              classes: transRes.slice([0, 0, 4], [-1, -1, 8]).argMax(2).squeeze(),
+              scores: boostedScores.max(2).squeeze(),
+              classes: boostedScores.argMax(2).squeeze(),
             };
         });
 
-        const nms = await tf.image.nonMaxSuppressionAsync(boxes as any, scores as any, 500, 0.5, 0.5);
+        // Kilit Düzeltme: Alt alta sıralı (list) elemanlar söz konusu olduğunda,
+        // NMS (Non-Max Suppression) varsayılan olarak %45 (0.45) kesişimde birbirlerini ezer ve sadece ilkini bırakır!
+        // iouThreshold'u 0.85'e çıkararak sadece %85 üzeri örtüşen aynı kutuları eziyoruz, böylece alt alta olanlar silinmiyor.
+        // scoreThreshold: 0.3 -> 0.2 yapıldı ki liste altlarındaki daha düşük eminlikteki tahminler de yakalansın.
+        const nms = await tf.image.nonMaxSuppressionAsync(boxes as any, scores as any, 500, 0.85, 0.2);
         const dBoxes = boxes.gather(nms, 0).dataSync();
         const dScores = scores.gather(nms, 0).dataSync();
         const dClasses = classes.gather(nms, 0).dataSync();
@@ -238,6 +257,7 @@ function App() {
     }));
 
     const matchedResults: ContrastAnalysisResult[] = [];
+    const matchedNativeIds = new Set<string>();
 
     // 🎯 IoU (Kesişim/Birleşim) Algoritması ile Güvenilir Eşleştirme
     aiResults.forEach((aiItem) => {
@@ -271,6 +291,7 @@ function App() {
 
         // Sadece %10'dan fazla uyuşma varsa gerçek bir obje olarak kabul et
         if (bestMatch && bestIoU > 0.1) {
+            matchedNativeIds.add(bestMatch.id);
             // ✨ YENİ: Kontrast Analizi
             let contrastRatio: number | undefined;
             let wcagCompliance: ContrastAnalysisResult["wcagCompliance"] | undefined;
@@ -299,6 +320,9 @@ function App() {
                 status: "✅",
                 message: "Hizalı",
                 preciseX: bestMatch.localX,
+                preciseY: bestMatch.localY,
+                width: bestMatch.width,
+                height: bestMatch.height,
                 previewUrl: aiItem.previewUrl,
                 // ✨ YENİ: Kontrast alanları
                 textColor: bestMatch.textColor,
@@ -310,8 +334,140 @@ function App() {
         }
     });
 
+    // ✨ YENİ: HYBRID FALLBACK (Yapay Zekanın Kaçırdıklarını Figma Layer İsimlerinden Yakalama)
+    // Eğer AI bir elemanı (özellikle listelerdeki dropdownları) kaçırdıysa ama tasarımcı katman ismine
+    // "dropdown", "button" vs. yazdıysa, bu veriyi doğrudan Figma üzerinden yakalayarak kurtarıyoruz.
+    normalizedNativeNodes.forEach(native => {
+        if (!matchedNativeIds.has(native.id)) {
+            const lowerName = native.name.toLowerCase();
+            let matchedClass = CLASSES.find(c => lowerName.includes(c));
+            
+            // Eğer sınıf isminde yoksa ama Figma Tipi VECTOR veya BOOLEAN_OPERATION ise ve ikon boyutlarındaysa
+            if (!matchedClass && (lowerName.includes("vector") || native.type === "VECTOR" || native.type === "BOOLEAN_OPERATION")) {
+                if (native.width < 100 && native.height < 100) {
+                    matchedClass = "icon";
+                }
+            }
+            
+            if (matchedClass) {
+                let contrastRatio: number | undefined;
+                let wcagCompliance: ContrastAnalysisResult["wcagCompliance"] | undefined;
+                let contrastStatus: "pass" | "warning" | "fail" | undefined;
+
+                if (native.textColor && native.backgroundColor) {
+                    contrastRatio = getContrastRatio(native.textColor, native.backgroundColor);
+                    wcagCompliance = checkWCAGCompliance(contrastRatio);
+                    contrastStatus = getContrastStatus(contrastRatio);
+                }
+
+                let fallbackPreviewUrl = "";
+                const img = imageRef.current;
+                
+                if (img) {
+                    const cropCanvas = document.createElement("canvas");
+                    const cropCtx = cropCanvas.getContext("2d");
+                    
+                    const px = native.localX;
+                    const py = native.localY;
+                    const pw = native.width;
+                    const ph = native.height;
+                    
+                    const MAX_W = 300; 
+                    const MAX_H = 120;
+                    const scaleCrop = Math.min(MAX_W / pw, MAX_H / ph, 1);
+                    
+                    cropCanvas.width = pw * scaleCrop;
+                    cropCanvas.height = Math.max(ph * scaleCrop, 1);
+
+                    if (cropCtx) {
+                        cropCtx.drawImage(
+                            img,
+                            px * 2, py * 2, pw * 2, ph * 2, 
+                            0, 0, pw * scaleCrop, ph * scaleCrop 
+                        );
+                        fallbackPreviewUrl = cropCanvas.toDataURL("image/png");
+                    }
+                }
+
+                matchedResults.push({
+                    id: native.id,
+                    class: matchedClass,
+                    score: 1.0, // Kullanıcı katmana isim verdiği için kesin bilgi
+                    status: "✅",
+                    message: "Figma Katmanından Yakalandı",
+                    preciseX: native.localX,
+                    preciseY: native.localY,
+                    width: native.width,
+                    height: native.height,
+                    previewUrl: fallbackPreviewUrl,
+                    textColor: native.textColor,
+                    backgroundColor: native.backgroundColor,
+                    contrastRatio,
+                    wcagCompliance,
+                    contrastStatus,
+                });
+            }
+        }
+    });
+
+    // ✨ YENİ: Kapsayıcı (Container) ve Çift Kopya (Duplicate) Eleme Mantığı
+    // Eğer küçük bir eleman daha büyük bir elemanın tamamen veya büyük oranda içindeyse
+    // veya tam olarak aynı boyutta birden fazla eleman tespit edildiyse, sadece en güçlüsü listelenir.
+    const filteredResults = matchedResults.filter((item, index, self) => {
+        if (item.preciseY === undefined || item.width === undefined || item.height === undefined) return true;
+
+        const itemLeft = item.preciseX;
+        const itemRight = item.preciseX + item.width;
+        const itemTop = item.preciseY;
+        const itemBottom = item.preciseY + item.height;
+        const itemArea = item.width * item.height;
+
+        for (const other of self) {
+            if (other.id === item.id) continue;
+            if (other.preciseY === undefined || other.width === undefined || other.height === undefined) continue;
+
+            const otherLeft = other.preciseX;
+            const otherRight = other.preciseX + other.width;
+            const otherTop = other.preciseY;
+            const otherBottom = other.preciseY + other.height;
+
+            const intersectLeft = Math.max(itemLeft, otherLeft);
+            const intersectRight = Math.min(itemRight, otherRight);
+            const intersectTop = Math.max(itemTop, otherTop);
+            const intersectBottom = Math.min(itemBottom, otherBottom);
+
+            if (intersectRight > intersectLeft && intersectBottom > intersectTop) {
+                const intersectArea = (intersectRight - intersectLeft) * (intersectBottom - intersectTop);
+                
+                // Eğer bizim alanımızın %80'inden fazlası diğer elemanla kesişiyorsa tehlike var!
+                if (intersectArea / itemArea > 0.8) {
+                    const otherArea = other.width * other.height;
+                    
+                    // Kural 1: Diğer eleman bizden daha büyükse, o bir kapsayıcıdır, bizi yutar.
+                    if (otherArea > itemArea) {
+                        return false;
+                    } 
+                    // Kural 2: Boyutlar birebir aynı (veya çok yakın) ise duplicate (çift kopya) vakasıdır.
+                    else if (Math.abs(otherArea - itemArea) < 2) {
+                        // Kimin güven skoru yüksekse o yaşar
+                        if (other.score > item.score) {
+                            return false;
+                        } 
+                        // Skorlar da eşitse dizideki ilk eleman yaşar
+                        else if (other.score === item.score) {
+                            const myIndex = self.indexOf(item);
+                            const otherIndex = self.indexOf(other);
+                            if (myIndex > otherIndex) return false;
+                        }
+                    }
+                }
+            }
+        }
+        return true;
+    });
+
     // Hizalama Kontrolü (Demokrasi Yöntemi)
-    const targets = matchedResults.filter(r => ["input", "button"].includes(r.class));
+    const targets = filteredResults.filter(r => ["input", "button"].includes(r.class));
     
     // Tolerans 0.5 piksele indirildi (Auto Layout sub-pixel kusurlarını engeller ama 1 px'i affetmez)
     const TOLERANCE = 0.5; 
@@ -328,7 +484,7 @@ function App() {
         });
     }
 
-    const finalResults = matchedResults.map(item => {
+    const finalResults = filteredResults.map(item => {
         if (["input", "button"].includes(item.class)) {
             const diff = item.preciseX - correctX;
             if (Math.abs(diff) > TOLERANCE) {
@@ -496,11 +652,13 @@ function App() {
                     overflow: "hidden",
                     padding: "4px"
                 }}>
-                    <img 
-                      src={res.previewUrl} 
-                      alt="preview" 
-                      style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} 
-                    />
+                    {res.previewUrl ? (
+                      <img 
+                        src={res.previewUrl} 
+                        alt="preview" 
+                        style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} 
+                      />
+                    ) : null}
                 </div>
             </div>
         ))}

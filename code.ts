@@ -21,72 +21,63 @@ function extractColorFromNode(node: SceneNode): { textColor?: [number, number, n
   const colors: { textColor?: [number, number, number], bgColor?: [number, number, number] } = {};
 
   try {
-    // STRATEJI:
-    // 1. Text node ise → text fill'i al
-    // 2. Parent text varsa → onun fill'ini al
-    // 3. Kendi fill'i varsa → background olarak al
-    // 4. Stroke varsa → text rengi olarak al (fallback)
-
-    // 1️⃣ BU NODE'UN KENDI TEXT RENGI (eğer TEXT node ise)
-    if (node.type === "TEXT") {
-      const textNode = node as TextNode;
-      if (textNode.fills && Array.isArray(textNode.fills)) {
-        for (const fill of textNode.fills) {
+    // 1️⃣ BU NODE'UN KENDI ÖN PLAN RENGI (TEXT veya VECTOR ise)
+    if (node.type === "TEXT" || node.type === "VECTOR" || node.type === "BOOLEAN_OPERATION") {
+      const fills = (node as any).fills;
+      if (Array.isArray(fills)) {
+        for (const fill of fills) {
           if (fill.type === "SOLID" && fill.color && (fill.visible !== false)) {
             const r = Math.round(fill.color.r * 255);
             const g = Math.round(fill.color.g * 255);
             const b = Math.round(fill.color.b * 255);
             colors.textColor = [r, g, b];
-            console.log(`[Color] TEXT: "${node.name}" text color = RGB(${r},${g},${b})`);
             break;
           }
         }
       }
     }
 
-    // 2️⃣ CHILD TEXT NODE'LARI TARA (Button içinde Text gibi)
+    // 2️⃣ CHILD TEXT/VECTOR NODE'LARI TARA (Button içinde Text veya Icon)
     if (!colors.textColor && "children" in node) {
       const children = (node as any).children;
       if (Array.isArray(children)) {
         for (const child of children) {
-          if (child.type === "TEXT" && child.visible) {
-            const textNode = child as TextNode;
-            if (textNode.fills && Array.isArray(textNode.fills)) {
-              for (const fill of textNode.fills) {
+          if ((child.type === "TEXT" || child.type === "VECTOR" || child.type === "BOOLEAN_OPERATION") && child.visible) {
+            const fills = (child as any).fills;
+            if (Array.isArray(fills)) {
+              for (const fill of fills) {
                 if (fill.type === "SOLID" && fill.color && (fill.visible !== false)) {
                   const r = Math.round(fill.color.r * 255);
                   const g = Math.round(fill.color.g * 255);
                   const b = Math.round(fill.color.b * 255);
                   colors.textColor = [r, g, b];
-                  console.log(`[Color] CHILD TEXT: "${child.name}" text color = RGB(${r},${g},${b})`);
                   break;
                 }
               }
-              if (colors.textColor) break; // İlk text rengi bulundu
+              if (colors.textColor) break;
             }
           }
         }
       }
     }
 
-    // 3️⃣ NODE'UN KENDI FILL'İ (Background) - SADECE TEXT OLMAYAN NODE'LAR İÇİN
-    if ("fills" in node && node.type !== "TEXT") {
+    // 3️⃣ NODE'UN KENDI FILL'İ (Background) - Frame, Rectangle gibi alan elemanları
+    if ("fills" in node && node.type !== "TEXT" && node.type !== "VECTOR" && node.type !== "BOOLEAN_OPERATION") {
       const fills = (node as any).fills;
       if (Array.isArray(fills) && fills.length > 0) {
         for (const fill of fills) {
-          if (fill.type === "SOLID" && fill.color && (fill.visible !== false)) {
+          if (fill.type === "SOLID" && fill.color && (fill.visible !== false) && fill.opacity !== 0) {
             const r = Math.round(fill.color.r * 255);
             const g = Math.round(fill.color.g * 255);
             const b = Math.round(fill.color.b * 255);
             colors.bgColor = [r, g, b];
-            console.log(`[Color] FILL: "${node.name}" bg color = RGB(${r},${g},${b})`);
             break;
           }
         }
       }
     }
 
-    // 4️⃣ NODE'UN STROKE'U (Fallback text color)
+    // 4️⃣ NODE'UN STROKE'U (Ön plan rengi bulunamadıysa Stroke rengini al)
     if (!colors.textColor && "strokes" in node) {
       const strokes = (node as any).strokes;
       if (Array.isArray(strokes) && strokes.length > 0) {
@@ -96,34 +87,34 @@ function extractColorFromNode(node: SceneNode): { textColor?: [number, number, n
             const g = Math.round(stroke.color.g * 255);
             const b = Math.round(stroke.color.b * 255);
             colors.textColor = [r, g, b];
-            console.log(`[Color] STROKE: "${node.name}" stroke color = RGB(${r},${g},${b})`);
             break;
           }
         }
       }
     }
 
-    // 5️⃣ PARENT BACKGROUND (Eğer node'un fill'i yoksa)
-    if (!colors.bgColor && "parent" in node && node.parent && node.parent.type !== "PAGE") {
-      const parent = node.parent as SceneNode;
-      if ("fills" in parent) {
-        const fills = (parent as any).fills;
-        if (Array.isArray(fills)) {
-          for (const fill of fills) {
-            if (fill.type === "SOLID" && fill.color && (fill.visible !== false)) {
-              const r = Math.round(fill.color.r * 255);
-              const g = Math.round(fill.color.g * 255);
-              const b = Math.round(fill.color.b * 255);
-              colors.bgColor = [r, g, b];
-              console.log(`[Color] PARENT: "${parent.name}" bg color = RGB(${r},${g},${b})`);
-              break;
+    // 5️⃣ PARENT BACKGROUND (Arka plan bulunamadıysa, ilk dolu ebeveyne kadar yukarı çık)
+    if (!colors.bgColor && "parent" in node) {
+      let currentParent = node.parent;
+      while (currentParent && currentParent.type !== "PAGE" && !colors.bgColor) {
+        if ("fills" in currentParent) {
+          const fills = (currentParent as any).fills;
+          if (Array.isArray(fills)) {
+            for (const fill of fills) {
+              // Sadece görünür ve transparan olmayan katı renkleri arka plan kabul et
+              if (fill.type === "SOLID" && fill.color && (fill.visible !== false) && fill.opacity !== 0) {
+                const r = Math.round(fill.color.r * 255);
+                const g = Math.round(fill.color.g * 255);
+                const b = Math.round(fill.color.b * 255);
+                colors.bgColor = [r, g, b];
+                break;
+              }
             }
           }
         }
+        currentParent = currentParent.parent;
       }
     }
-
-    console.log(`[Color] FINAL: "${node.name}" →`, colors);
 
   } catch (error) {
     console.error(`[Color] ERROR on "${node.name}":`, error);
@@ -185,6 +176,7 @@ figma.ui.onmessage = async (msg) => {
         return {
           id: node.id,
           name: node.name,
+          type: node.type, // Eklendi
           x: absX, // Artık Relative değil, Absolute X
           y: absY, // Artık Relative değil, Absolute Y
           width: node.width,
