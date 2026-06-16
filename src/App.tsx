@@ -42,6 +42,7 @@ interface AIRawResult {
 
 interface AnalysisResult {
   id: string;
+  name: string;
   class: string;
   score: number;
   status: "✅" | "❌";
@@ -87,6 +88,8 @@ function App() {
   const [model, setModel] = useState<tf.GraphModel | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [results, setResults] = useState<AnalysisResult[]>([]);
+  const [filterAlignmentError, setFilterAlignmentError] = useState(false);
+  const [filterContrastError, setFilterContrastError] = useState(false);
   
   const tempAIResultsStr = useRef<string>("[]"); 
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -292,6 +295,22 @@ function App() {
         // Sadece %10'dan fazla uyuşma varsa gerçek bir obje olarak kabul et
         if (bestMatch && bestIoU > 0.1) {
             matchedNativeIds.add(bestMatch.id);
+            
+            // ✨ Katman isminden sınıfı ezme (Override AI with explicit layer name)
+            let finalClass = aiItem.class;
+            const lowerName = bestMatch.name.toLowerCase();
+            const matchedNameClass = CLASSES.find(c => lowerName.includes(c));
+            
+            if (matchedNameClass) {
+                // Eğer Figma'da tasarımcı açıkça "input", "button", "dropdown" vs. yazdıysa ve 
+                // eşleşen obje bir metin (TEXT) değilse (yani kutunun kendisiyse), yapay zekayı ez.
+                if (bestMatch.type !== "TEXT") {
+                    finalClass = matchedNameClass;
+                } else if (matchedNameClass === "label" || matchedNameClass === "icon") {
+                    finalClass = matchedNameClass;
+                }
+            }
+
             // ✨ YENİ: Kontrast Analizi
             let contrastRatio: number | undefined;
             let wcagCompliance: ContrastAnalysisResult["wcagCompliance"] | undefined;
@@ -315,7 +334,8 @@ function App() {
 
             matchedResults.push({
                 id: bestMatch.id,
-                class: aiItem.class,
+                name: bestMatch.name,
+                class: finalClass, // Önceden aiItem.class idi, şimdi ezilebilen class
                 score: aiItem.score,
                 status: "✅",
                 message: "Hizalı",
@@ -346,6 +366,41 @@ function App() {
             if (!matchedClass && (lowerName.includes("vector") || native.type === "VECTOR" || native.type === "BOOLEAN_OPERATION")) {
                 if (native.width < 100 && native.height < 100) {
                     matchedClass = "icon";
+                }
+            }
+            
+            // ✨ YENİ: HEURİSTİK ALGILAMA (Pasif Input / Satır Algılama)
+            // Eğer isimlendirme yapılmadıysa, tasarımcı unutmuş olabilir. 
+            // Aynı hizada (X), benzer genişlikte ve yükseklikte olan dikey bir liste elemanıysa bunu "input" kabul et.
+            if (!matchedClass && (native.type === "FRAME" || native.type === "GROUP" || native.type === "COMPONENT" || native.type === "INSTANCE")) {
+                const isRowShape = native.width > 100 && native.height >= 15 && native.height <= 80;
+                
+                if (isRowShape) {
+                    // Aynı X koordinatına ve benzer boyutlara sahip "kardeş" satır var mı?
+                    const siblings = normalizedNativeNodes.filter(n => 
+                        n.id !== native.id &&
+                        (n.type === "FRAME" || n.type === "GROUP" || n.type === "COMPONENT" || n.type === "INSTANCE") &&
+                        Math.abs(n.localX - native.localX) <= 2 &&
+                        Math.abs(n.width - native.width) <= 5 &&
+                        Math.abs(n.height - native.height) <= 10 &&
+                        Math.abs(n.localY - native.localY) <= (native.height * 4) // Dikeyde birbirine yakın olmalılar
+                    );
+
+                    // Eğer kendisi dışında en az 1 benzer satır varsa (yani bir liste/form oluşturuyorsa)
+                    if (siblings.length >= 1) {
+                        // İçinde en az 1 metin içeriyor mu? (Örn: "Yaş", "21")
+                        const hasTextInside = normalizedNativeNodes.some(n => 
+                            n.type === "TEXT" &&
+                            n.localX >= native.localX && 
+                            n.localY >= native.localY &&
+                            (n.localX + n.width) <= (native.localX + native.width) &&
+                            (n.localY + n.height) <= (native.localY + native.height)
+                        );
+
+                        if (hasTextInside) {
+                            matchedClass = "input"; // Yapısal analizle input/satır olduğuna karar verdik
+                        }
+                    }
                 }
             }
             
@@ -389,13 +444,14 @@ function App() {
                     }
                 }
 
-                matchedResults.push({
-                    id: native.id,
-                    class: matchedClass,
-                    score: 1.0, // Kullanıcı katmana isim verdiği için kesin bilgi
-                    status: "✅",
-                    message: "Figma Katmanından Yakalandı",
-                    preciseX: native.localX,
+                    matchedResults.push({
+                        id: native.id,
+                        name: native.name,
+                        class: matchedClass,
+                        score: 0.95, // Algoritmik çıkarım veya katman ismi yüksek güvenilirlik taşır
+                        status: "✅",
+                        message: "Yapısal Algılama",
+                        preciseX: native.localX,
                     preciseY: native.localY,
                     width: native.width,
                     height: native.height,
@@ -467,7 +523,7 @@ function App() {
     });
 
     // Hizalama Kontrolü (Demokrasi Yöntemi)
-    const targets = filteredResults.filter(r => ["input", "button"].includes(r.class));
+    const targets = filteredResults.filter(r => ["input", "button", "dropdown"].includes(r.class));
     
     // Tolerans 0.5 piksele indirildi (Auto Layout sub-pixel kusurlarını engeller ama 1 px'i affetmez)
     const TOLERANCE = 0.5; 
@@ -485,7 +541,7 @@ function App() {
     }
 
     const finalResults = filteredResults.map(item => {
-        if (["input", "button"].includes(item.class)) {
+        if (["input", "button", "dropdown"].includes(item.class)) {
             const diff = item.preciseX - correctX;
             if (Math.abs(diff) > TOLERANCE) {
                  const dir = diff > 0 ? "Sağ" : "Sol";
@@ -496,8 +552,22 @@ function App() {
         return { ...item, status: "✅", message: " " };
     });
 
-    setResults(finalResults);
-    setStatus(`Bitti (${finalResults.length} öğe)`);
+    // ✨ YENİ: Sonuçları yukarıdan aşağıya (ve soldan sağa) sırala
+    const sortedResults = finalResults.sort((a, b) => {
+        const yA = a.preciseY ?? 0;
+        const yB = b.preciseY ?? 0;
+        const xA = a.preciseX ?? 0;
+        const xB = b.preciseX ?? 0;
+
+        // 10 piksel tolerans: Eğer iki obje dikeyde çok yakınsa (yan yanalar), X eksenine göre soldan sağa sırala
+        if (Math.abs(yA - yB) > 10) {
+            return yA - yB;
+        }
+        return xA - xB;
+    });
+
+    setResults(sortedResults);
+    setStatus(`Bitti (${sortedResults.length} öğe)`);
     setIsProcessing(false);
   };
 
@@ -508,6 +578,29 @@ function App() {
     parent.postMessage({ pluginMessage: { type: "analyze-request" } }, "*");
   };
 
+  // ✨ YENİ: Filtreleme Mantığı
+  const displayResults = results.filter(res => {
+     if (!filterAlignmentError && !filterContrastError) return true;
+     
+     const hasAlignmentError = res.status === "❌";
+     const contrastRes = res as any;
+     const hasContrastError = contrastRes.contrastStatus === "warning" || contrastRes.contrastStatus === "fail";
+     
+     if (filterAlignmentError && filterContrastError) {
+         return hasAlignmentError || hasContrastError;
+     }
+     
+     if (filterAlignmentError) {
+         return hasAlignmentError;
+     }
+     
+     if (filterContrastError) {
+         return hasContrastError;
+     }
+     
+     return true;
+  });
+
   return (
     <div style={{ fontFamily: "Inter, sans-serif", height: "100vh", display: "flex", flexDirection: "column", background: "#FFFFFF", overflow: "hidden", width: "100%" }}>
       {/* HEADER */}
@@ -516,9 +609,23 @@ function App() {
           <h2 style={{margin:0, fontSize:"14px", fontWeight: "600"}}>FigmaSense AI 👁️</h2>
           <span style={{fontSize:"11px", color:"#888", fontWeight: "500"}}>{status}</span>
         </div>
-        <button onClick={requestAnalysis} disabled={!model || isProcessing} style={{ background: model && !isProcessing ? "#18A0FB" : "#ccc", color: "white", border: "none", padding: "10px", borderRadius: "6px", width: "100%", cursor: model && !isProcessing ? "pointer" : "default", fontWeight: "600" }}>
+        <button onClick={requestAnalysis} disabled={!model || isProcessing} style={{ background: model && !isProcessing ? "#18A0FB" : "#ccc", color: "white", border: "none", padding: "10px", borderRadius: "6px", width: "100%", cursor: model && !isProcessing ? "pointer" : "default", fontWeight: "600", marginBottom: "10px" }}>
           {isProcessing ? "İnceleniyor..." : "Tasarımı Denetle"}
         </button>
+
+        {/* ✨ YENİ: FİLTRELER */}
+        {results.length > 0 && (
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            <label style={{ fontSize: "11px", display: "flex", alignItems: "center", gap: "4px", cursor: "pointer", background: filterAlignmentError ? "#FFEBEE" : "#f5f5f5", color: filterAlignmentError ? "#D32F2F" : "#555", padding: "4px 8px", borderRadius: "4px", border: filterAlignmentError ? "1px solid #FFCDD2" : "1px solid #ddd", flex: 1, justifyContent: "center" }}>
+              <input type="checkbox" checked={filterAlignmentError} onChange={(e) => setFilterAlignmentError(e.target.checked)} style={{ margin: 0 }} />
+              Hizalama Hatası
+            </label>
+            <label style={{ fontSize: "11px", display: "flex", alignItems: "center", gap: "4px", cursor: "pointer", background: filterContrastError ? "#FFF3E0" : "#f5f5f5", color: filterContrastError ? "#E65100" : "#555", padding: "4px 8px", borderRadius: "4px", border: filterContrastError ? "1px solid #FFE0B2" : "1px solid #ddd", flex: 1, justifyContent: "center" }}>
+              <input type="checkbox" checked={filterContrastError} onChange={(e) => setFilterContrastError(e.target.checked)} style={{ margin: 0 }} />
+              Kontrast Hatası
+            </label>
+          </div>
+        )}
       </div>
 
       {/* LİSTE */}
@@ -526,8 +633,11 @@ function App() {
         {results.length === 0 && !isProcessing && (
             <div style={{textAlign:"center", color:"#999", fontSize:"12px", marginTop:"30px"}}>Frame seçip taramayı başlatın.</div>
         )}
+        {results.length > 0 && displayResults.length === 0 && (
+            <div style={{textAlign:"center", color:"#999", fontSize:"12px", marginTop:"30px"}}>Filtrelere uygun eleman bulunamadı.</div>
+        )}
         
-        {results.map((res, i) => (
+        {displayResults.map((res, i) => (
             <div key={i} style={{ 
               display: "flex", 
               flexDirection: "column", 
@@ -546,6 +656,9 @@ function App() {
                          <span style={{fontSize: "14px"}}>{getIcon(res.class)}</span>
                          <span style={{fontWeight:"700", fontSize:"13px", textTransform:"capitalize", color: "#333"}}>
                            {formatName(res.class)}
+                         </span>
+                         <span style={{fontSize:"10px", color:"#888", fontWeight:"normal", maxWidth: "100px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"}} title={res.name}>
+                           ({res.name})
                          </span>
                     </div>
 
