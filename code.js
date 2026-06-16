@@ -153,6 +153,8 @@
         return;
       }
       const mainFrame = selection[0];
+      const frameAbsX = mainFrame.absoluteTransform[0][2];
+      const frameAbsY = mainFrame.absoluteTransform[1][2];
       const allDescendants = findAllNodes(mainFrame);
       const nativeNodes = allDescendants.filter((node) => node.visible).map((node) => {
         const absX = node.absoluteTransform[0][2];
@@ -175,7 +177,12 @@
           // ✨ YENİ
         };
       });
-      figma.ui.postMessage({ type: "native-data", nodes: nativeNodes });
+      figma.ui.postMessage({
+        type: "native-data",
+        nodes: nativeNodes,
+        frameX: frameAbsX,
+        frameY: frameAbsY
+      });
     }
   });
 })();

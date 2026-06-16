@@ -155,6 +155,8 @@ figma.ui.onmessage = async (msg) => {
     }
 
     const mainFrame = selection[0];
+    const frameAbsX = mainFrame.absoluteTransform[0][2];
+    const frameAbsY = mainFrame.absoluteTransform[1][2];
 
     // Sadece doğrudan çocukları değil, tüm ağacı tara (Deep Search)
     // Böylece grupların içindeki inputları da yakalarız.
@@ -186,6 +188,11 @@ figma.ui.onmessage = async (msg) => {
         };
       });
 
-    figma.ui.postMessage({ type: "native-data", nodes: nativeNodes });
+    figma.ui.postMessage({ 
+      type: "native-data", 
+      nodes: nativeNodes,
+      frameX: frameAbsX,
+      frameY: frameAbsY
+    });
   }
 };

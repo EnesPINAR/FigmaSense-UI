@@ -124,7 +124,7 @@ function App() {
       } else if (msg.type === "image-data") {
         runAIPrediction(msg.bytes);
       } else if (msg.type === "native-data") {
-        processHybridData(msg.nodes);
+        processHybridData(msg.nodes, msg.frameX, msg.frameY);
       }
     };
     window.addEventListener("message", handleMessage);
@@ -242,7 +242,7 @@ function App() {
     }
   };
 
-  const processHybridData = (nativeNodes: NativeNodeData[]) => {
+  const processHybridData = (nativeNodes: NativeNodeData[], frameX: number, frameY: number) => {
     const aiResults: AIRawResult[] = JSON.parse(tempAIResultsStr.current);
     
     if (nativeNodes.length === 0) {
@@ -250,13 +250,10 @@ function App() {
         return;
     }
 
-    const frameMinX = Math.min(...nativeNodes.map(n => n.x));
-    const frameMinY = Math.min(...nativeNodes.map(n => n.y));
-
     const normalizedNativeNodes = nativeNodes.map(n => ({
         ...n,
-        localX: n.x - frameMinX,
-        localY: n.y - frameMinY
+        localX: n.x - frameX,
+        localY: n.y - frameY
     }));
 
     const matchedResults: ContrastAnalysisResult[] = [];
@@ -400,6 +397,31 @@ function App() {
                         if (hasTextInside) {
                             matchedClass = "input"; // Yapısal analizle input/satır olduğuna karar verdik
                         }
+                    }
+                }
+            }
+            
+            // ✨ YENİ: HEURİSTİK ALGILAMA (İllüstrasyon / Büyük Vektör Grubu)
+            // Parça parça çizilmiş büyük illüstrasyonları tek parça bir obje olarak değerlendirmek için.
+            if (!matchedClass && (native.type === "FRAME" || native.type === "GROUP")) {
+                const graphicalTypes = ["VECTOR", "BOOLEAN_OPERATION", "RECTANGLE", "ELLIPSE", "POLYGON", "STAR", "LINE"];
+                
+                // Kendi sınırları içine düşen elemanları bul
+                const childrenGeographical = normalizedNativeNodes.filter(n => 
+                    n.id !== native.id &&
+                    n.localX >= native.localX &&
+                    n.localY >= native.localY &&
+                    (n.localX + n.width) <= (native.localX + native.width) &&
+                    (n.localY + n.height) <= (native.localY + native.height)
+                );
+
+                if (childrenGeographical.length > 0) {
+                    const hasGraphics = childrenGeographical.some(n => graphicalTypes.includes(n.type));
+                    const hasText = childrenGeographical.some(n => n.type === "TEXT");
+
+                    // Metin yoksa ve grafik/vektör varsa => bu tekil bir ikon/resim grubudur.
+                    if (hasGraphics && !hasText) {
+                        matchedClass = "icon";
                     }
                 }
             }
